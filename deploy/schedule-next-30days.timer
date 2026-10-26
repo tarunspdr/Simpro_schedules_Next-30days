@@ -1,0 +1,17 @@
+[Unit]
+Description=Run Simpro schedules (next 30 days) load daily at 23:00 Melbourne
+Requires=schedule-next-30days.service
+
+[Timer]
+# 23:00 Melbourne time, whatever timezone the server is in (handles AEST/AEDT).
+OnCalendar=*-*-* 23:00:00 Australia/Melbourne
+
+# If the server was off at 23:00, run on next boot.
+Persistent=true
+
+RandomizedDelaySec=30s
+
+Unit=schedule-next-30days.service
+
+[Install]
+WantedBy=timers.target
