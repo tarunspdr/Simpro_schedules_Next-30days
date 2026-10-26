@@ -32,19 +32,28 @@ rsync -a --exclude='venv' --exclude='__pycache__' --exclude='logs' \
       --exclude='.env' --exclude='*.pyc' --exclude='.git' \
       "$REPO_DIR/" "$INSTALL_DIR/"
 
-# 2. Build / refresh the virtualenv (project-local, system Python untouched)
-if [[ ! -d "$INSTALL_DIR/venv" ]]; then
-  echo "==> Creating venv"
-  "$PYTHON_BIN" -m venv "$INSTALL_DIR/venv"
-fi
-"$INSTALL_DIR/venv/bin/pip" install --upgrade pip
-"$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
-
-# 3. Log directory
+# 2. Log directory + ownership — only inside INSTALL_DIR
 mkdir -p "$INSTALL_DIR/logs"
-
-# 4. Ownership — only inside INSTALL_DIR
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
+
+# 3. Build / refresh the virtualenv as SERVICE_USER (project-local, system Python untouched).
+#    Try stdlib venv first; fall back to the user's own virtualenv (e.g. in ~/.local)
+#    on servers where python3-venv / ensurepip isn't available.
+as_user() { sudo -u "$SERVICE_USER" -H "$@"; }
+
+if [[ ! -x "$INSTALL_DIR/venv/bin/pip" ]]; then
+  echo "==> Creating venv"
+  rm -rf "$INSTALL_DIR/venv"   # clear any half-created venv from a failed attempt
+  if ! as_user "$PYTHON_BIN" -m venv "$INSTALL_DIR/venv" 2>/dev/null; then
+    echo "==> python3 -m venv unavailable, using virtualenv"
+    rm -rf "$INSTALL_DIR/venv"
+    as_user "$PYTHON_BIN" -m virtualenv "$INSTALL_DIR/venv"
+  fi
+fi
+as_user "$INSTALL_DIR/venv/bin/pip" install --upgrade pip
+as_user "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
+
+# 4. Lock down .env
 if [[ -f "$INSTALL_DIR/.env" ]]; then
   chmod 600 "$INSTALL_DIR/.env"
 else

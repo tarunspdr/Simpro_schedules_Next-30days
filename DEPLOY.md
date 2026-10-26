@@ -15,7 +15,9 @@ Logs:
 ## 1. Prerequisites on the server
 
 - Python 3.10+ (`python3 --version`)
-- `python3-venv`, `rsync`, `git`
+- `rsync`, `git`
+- Either `python3-venv`, or `virtualenv` installed for the service user (`python3 -m virtualenv --version`).
+  This server uses the latter (virtualenv in `~xrdpuser/.local`); `deploy.sh` falls back to it automatically.
 - **Microsoft ODBC Driver 18 for SQL Server** (`odbcinst -q -d` should list it)
 - Server timezone must be Melbourne or Sydney (same clock), because cron uses the server's timezone:
   ```bash
@@ -138,7 +140,7 @@ Remove the `Schedule_Next_30Days` block with `crontab -e`.
 | Symptom | Fix |
 |---|---|
 | `ERROR: 'ODBC Driver 18 for SQL Server' is not installed` | Install `msodbcsql18`, then re-run deploy. |
-| `Error: Command '[..., 'ensurepip', ...]' returned non-zero exit status 1` | `python3-venv` missing: `sudo apt install python3-venv`. |
+| `No module named virtualenv` | Neither venv nor virtualenv available for the service user. Install it as that user: `python3 -m pip install --user virtualenv`. Don't force `apt install python3-venv` on this server — its apt sources don't match the OS. |
 | `Login timeout expired` / `TCP Provider` error | Server IP not allowed in the Azure SQL firewall, or outbound port 1433 is blocked. |
 | `Invalid object name ...Simpro_Schedules_Next30Days` | Table not created — run `create_tables.sql` in the database. |
 | `Missing SIMPRO_API_KEY in .env` | `.env` missing or unreadable. Check `ls -la /opt/Schedule_Next_30Days/.env`. |
