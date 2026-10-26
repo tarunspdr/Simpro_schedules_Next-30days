@@ -1,70 +1,52 @@
 # Linux Deployment — Simpro Schedules (Next 30 Days)
 
-Runs `main.py` **daily at 23:00 Melbourne time** via a systemd timer. Each run replaces all rows in
-`specialisedspdr_sp_readwrite.Simpro_Schedules_Next30Days` with job schedules from tomorrow to today + 30.
-Logs go to **both** the systemd journal and a rotating file (`logs/schedule_next_30days.log`).
+Runs `main.py` **daily at 23:00 Melbourne time** via **cron**, the same way as the other jobs on the server.
+Each run replaces all rows in `specialisedspdr_sp_readwrite.Simpro_Schedules_Next30Days` with job schedules
+from tomorrow to today + 30.
+
+Logs:
+- `logs/schedule_next_30days.log` — every run (rotated at 10 MB, 5 backups = ~50 MB max)
+- `logs/cron.log` — only output that happens before logging starts (e.g. a missing package)
+
+`deploy/deploy.sh` only writes inside the install folder. It never edits crontab, systemd, or system Python.
 
 ---
 
 ## 1. Prerequisites on the server
 
-- Linux with systemd 235+ (Ubuntu 20.04+, Debian 11+, RHEL 8+)
 - Python 3.10+ (`python3 --version`)
-- `python3-venv` and `rsync` (`sudo apt install python3-venv rsync` on Debian/Ubuntu)
-- **Microsoft ODBC Driver 18 for SQL Server** — needed by `pyodbc`. The deploy script stops if it's missing.
-  Check with:
+- `python3-venv`, `rsync`, `git`
+- **Microsoft ODBC Driver 18 for SQL Server** (`odbcinst -q -d` should list it)
+- Server timezone must be Melbourne or Sydney (same clock), because cron uses the server's timezone:
   ```bash
-  odbcinst -q -d
+  timedatectl | grep "Time zone"
   ```
-  If `ODBC Driver 18 for SQL Server` isn't listed, install it following Microsoft's guide for your distro:
-  https://learn.microsoft.com/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server
-  (on Ubuntu/Debian it ends with `sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev`)
 - The server's public IP must be allowed through the Azure SQL firewall.
-- Root / sudo access
 
 ---
 
-## 2. Copy the project to the server
-
-From your machine (the folder name has spaces, so keep the quotes):
+## 2. Get the code and install
 
 ```bash
-rsync -av --exclude='venv' --exclude='__pycache__' --exclude='logs' --exclude='.env' \
-  "./schedule next 30days/" user@server:/tmp/schedule-next-30days/
+git clone https://github.com/tarunspdr/Simpro_schedules_Next-30days.git /tmp/Schedule_Next_30Days
+cd /tmp/Schedule_Next_30Days
+sudo INSTALL_DIR=/opt/Schedule_Next_30Days SERVICE_USER=xrdpuser bash deploy/deploy.sh
 ```
 
----
-
-## 3. Deploy
-
-```bash
-ssh user@server
-cd /tmp/schedule-next-30days
-sudo INSTALL_DIR=/opt/schedule-next-30days SERVICE_USER=$(whoami) \
-  bash deploy/deploy.sh
-```
-
-What this does:
+What this does (all inside `/opt/Schedule_Next_30Days`):
 1. Checks the ODBC driver is installed
-2. Copies code to `/opt/schedule-next-30days` (an existing `.env` there is kept)
+2. Copies the code (an existing `.env` there is kept)
 3. Creates `venv/` and installs `requirements.txt`
-4. Creates `logs/`
-5. Installs `schedule-next-30days.service` and `.timer` into `/etc/systemd/system/`
-6. Enables and starts the timer
-
-Override env vars if needed:
-- `INSTALL_DIR` — where the app lives. Default `/opt/schedule-next-30days`.
-- `SERVICE_USER` — Linux user the service runs as. Default: the user invoking sudo.
-- `PYTHON_BIN` — alternate Python. Default `python3`.
+4. Creates `logs/` and sets ownership to `SERVICE_USER`
 
 ---
 
-## 4. Create the `.env` (first deploy only)
+## 3. Create the `.env` (first deploy only)
 
 ```bash
-cd /opt/schedule-next-30days
-sudo -u <service user> cp .env.example .env
-sudo -u <service user> nano .env    # fill in all values
+cd /opt/Schedule_Next_30Days
+cp .env.example .env
+nano .env        # fill in all values, Ctrl+O Enter to save, Ctrl+X to exit
 chmod 600 .env
 ```
 
@@ -81,22 +63,49 @@ chmod 600 .env
 
 ---
 
-## 5. Verify
+## 4. Test run
 
 ```bash
-# Is the timer scheduled? NEXT should show 23:00 Melbourne (printed in the server's timezone)
-systemctl list-timers schedule-next-30days.timer
-
-# Force a run right now (don't wait for 23:00)
-sudo systemctl start schedule-next-30days.service
-
-# Was the most recent run successful?
-systemctl status schedule-next-30days.service
+cd /opt/Schedule_Next_30Days && venv/bin/python -m main
 ```
 
-A successful run ends with:
+It should end with:
 ```
 [INFO] DONE | replaced specialisedspdr_sp_readwrite.Simpro_Schedules_Next30Days (536 rows)
+```
+
+---
+
+## 5. Add the cron job
+
+```bash
+crontab -e
+```
+
+Add this block at the bottom (don't change any other lines), then save and exit:
+
+```
+# ================================
+# Schedule_Next_30Days (daily 11 PM Melbourne)
+# ================================
+0 23 * * * cd /opt/Schedule_Next_30Days && /opt/Schedule_Next_30Days/venv/bin/python -m main >> /opt/Schedule_Next_30Days/logs/cron.log 2>&1
+```
+
+Check it was saved:
+```bash
+crontab -l | grep Schedule_Next_30Days
+```
+
+---
+
+## 6. View logs
+
+```bash
+# Last run
+tail -n 50 /opt/Schedule_Next_30Days/logs/schedule_next_30days.log
+
+# Anything cron itself captured (should normally be empty)
+tail -n 50 /opt/Schedule_Next_30Days/logs/cron.log
 ```
 
 And in SQL:
@@ -107,52 +116,20 @@ FROM specialisedspdr_sp_readwrite.Simpro_Schedules_Next30Days;
 
 ---
 
-## 6. View logs
-
-**Live tail (systemd journal):**
-```bash
-journalctl -u schedule-next-30days.service -f
-```
-
-**Last run only:**
-```bash
-journalctl -u schedule-next-30days.service -n 200 --no-pager
-```
-
-**Errors across all past runs:**
-```bash
-journalctl -u schedule-next-30days.service -p err --since "7 days ago"
-```
-
-**Persistent file log** (rotated at 10 MB, 5 backups = ~50 MB max):
-```bash
-tail -f /opt/schedule-next-30days/logs/schedule_next_30days.log
-```
-
----
-
 ## 7. Updating after code changes
 
-Copy the updated code to `/tmp/schedule-next-30days` again (step 2), then re-run the deploy script.
-It's safe to run repeatedly, and `.env` is kept:
-
 ```bash
-sudo INSTALL_DIR=/opt/schedule-next-30days SERVICE_USER=$(whoami) \
-  bash deploy/deploy.sh
+cd /tmp/Schedule_Next_30Days && git pull
+sudo INSTALL_DIR=/opt/Schedule_Next_30Days SERVICE_USER=xrdpuser bash deploy/deploy.sh
 ```
+
+`.env`, `logs/` and the cron line are kept.
 
 ---
 
-## 8. Stop / disable
+## 8. Stop
 
-```bash
-# Stop the timer (no more scheduled runs)
-sudo systemctl disable --now schedule-next-30days.timer
-
-# Fully remove
-sudo rm /etc/systemd/system/schedule-next-30days.{service,timer}
-sudo systemctl daemon-reload
-```
+Remove the `Schedule_Next_30Days` block with `crontab -e`.
 
 ---
 
@@ -160,11 +137,11 @@ sudo systemctl daemon-reload
 
 | Symptom | Fix |
 |---|---|
-| `ERROR: 'ODBC Driver 18 for SQL Server' is not installed` | Install `msodbcsql18` (section 1), then re-run deploy. |
-| `Can't open lib 'ODBC Driver 18 for SQL Server'` | Same as above — the driver is missing or broken. |
+| `ERROR: 'ODBC Driver 18 for SQL Server' is not installed` | Install `msodbcsql18`, then re-run deploy. |
+| `Error: Command '[..., 'ensurepip', ...]' returned non-zero exit status 1` | `python3-venv` missing: `sudo apt install python3-venv`. |
 | `Login timeout expired` / `TCP Provider` error | Server IP not allowed in the Azure SQL firewall, or outbound port 1433 is blocked. |
 | `Invalid object name ...Simpro_Schedules_Next30Days` | Table not created — run `create_tables.sql` in the database. |
-| `Missing SIMPRO_API_KEY in .env` | `.env` not present or unreadable by the service user. Check `ls -la /opt/schedule-next-30days/.env`. |
+| `Missing SIMPRO_API_KEY in .env` | `.env` missing or unreadable. Check `ls -la /opt/Schedule_Next_30Days/.env`. |
 | `/usr/bin/env: 'bash\r': No such file or directory` | Scripts got Windows line endings. Run `sed -i 's/\r$//' deploy/*.sh` and retry. |
-| `Failed to start ... Permission denied` | `sudo chown -R <service user>:<service user> /opt/schedule-next-30days` |
+| Cron didn't run | `grep CRON /var/log/syslog | tail` to see if cron fired; check `logs/cron.log`. |
 | A run failed — is the table empty? | No. The delete + insert is one transaction, so on failure the previous day's data stays. |

@@ -10,7 +10,7 @@
 # in one transaction, so if anything fails the table keeps the previous
 # day's data.
 #
-# Deployed on Linux via systemd, daily at 23:00 Melbourne (see deploy/).
+# Deployed on Linux via cron, daily at 23:00 Melbourne (see DEPLOY.md).
 # ================================================================
 import os
 import sys
@@ -41,7 +41,9 @@ logger = logging.getLogger("schedule_next_30days")
 
 def _setup_logging() -> None:
     """
-    Console (→ systemd journal) + rotating file logging.
+    Rotating file logging, plus console when run by hand in a terminal.
+    Under cron stdout is redirected to logs/cron.log, so console output is
+    skipped there to avoid logging everything twice into an unrotated file.
     LOG_DIR env var overrides the default ./logs directory.
     """
     log_dir = Path(os.getenv("LOG_DIR", HERE / "logs"))
@@ -52,9 +54,10 @@ def _setup_logging() -> None:
     root.setLevel(logging.INFO)
     root.handlers.clear()
 
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(fmt)
-    root.addHandler(console)
+    if sys.stdout.isatty():
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(fmt)
+        root.addHandler(console)
 
     # 10 MB per file, keep 5 — ~50 MB max
     file_h = RotatingFileHandler(
